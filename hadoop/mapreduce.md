@@ -138,9 +138,154 @@ task counter收集任务执行期间的信息，同一个作业所有任务的�
 
 对数据排序是MapReduce的核心，MapReduce中有以下几种排序：
 
-+ 部分排序（partial sort）：
-+ 全排序（total sort）：
-+ 二次排序（secondary sort）
++ 部分排序（partial sort）：MapReduce默认按照键对输入记录进行排序，每个reducer输出都是有序的，reducer间无序。适用于根据键查找的场景
++ 全排序（total sort）：使用单个分区或使用保持reducer间输出有序的partitioner
++ 二次排序（secondary sort）：用于对值排序
+
+使用保持reducer间输出有序的partitioner实现全排序要求partitioner对数据分区均匀，不引起数据倾斜。通过对键空间抽样来分析键分布情况，进而得到一个较均匀的分区集合，可以联合使用`InputSampler`和`TotalOrderPartitioner`来实现。
+
+```Java
+public class SortByTemperatureUsingTotalOrderPartitioner extends Configured implements Tool {
+  @Override
+  public int run(String[] args) throws Exception {
+    Job job = JobBuilder.parseInputAndOutput(this, getConf(), args);
+    if (job == null) return -1;
+    job.setInputFormatClass(SequenceFileInputFormat.class);
+    job.setOutputKeyClass(IntWritable.class);
+    job.setOutputFormatClass(SequenceFileOutputFormat.class);
+    SequenceFileOutputFormat.setCompressOutput(job, true);
+    SequenceFileOutputFormat.setOutputCompressorClass(job, GzipCodec.class);
+    SequenceFileOutputFormat.setOutputCompressionType(job, CompressionType.BLOCK);
+    job.setPartitionerClass(TotalOrderPartitioner.class);
+    InputSampler.Sampler<IntWritable, Text> sampler = new InputSampler.writePartitionFile(job, sampler);
+
+    Configuration conf = job.getConfiguration();
+    String partitionFile = TotalOrderPartitioner.getPartitionFile(conf);
+    URI partitionUri = new URI(partitionFile);
+    job.addCacheFile(partitionUri);
+
+    return job.waitForCompleion(true)?0:1;
+  }
+  public static void main(String[] args) throws Exception {
+    int exitCode = ToolRunner.run(new SortByTemperatureUsingTotalOrderPartitioner(), args);
+    System.exit(exitCode);
+  }
+}
+```
+
+Hadoop提供了TotalOrderPartitioner工具类用于全排序。使用TotalOrderPartitioner需要提供一个分区文件，这个分区文件中包含了`ReduceTaskNum-1`个键，并且这些键按照从小到大排序。在读取分区文件之后，TotalOrderPartitioner会判断键是不是BinaryComparable（意为字节可比）类型的。对于非BinaryComparable类型的键，TotalOrderPartitioner使用二分查找（`Arrays.binarySearch()`）确定键的分区，每次查找的时间复杂度为`O(logR)`，R为`ReduceTaskNum-1`；对于BinaryComparable类型的键，即字符串，将按照字典序进行排序，MapReduce采用Trie树查找确定键的分区，每次查找的时间复杂度为`O(m)`，m为Trie树深度。
+
+Hadoop提供了InputSampler工具类用于对数据采样，InputSampler内置三个采样器：SplitSampler、RandomSampler、IntervalSampler。SplitSampler对每个分片中的前n行记录进行采样，RandomSample按照一定频率对所有记录做随机取样，IntervalSampler按照固定的间隔从每个分片中取样。也可以实现Sampler接口来自定义取样器。取样的目的在于生成大小近似相等的分区。
+
+```Java
+public class InputSampler<K,V> implements Tool {
+  // 采样器接口
+  public interface sampler<K,V> {
+    /**
+     * 从输入数据中获得一个数据采样子集，然后通过这些采样数据在Map端由TotalOrderPartitioner对输入数据分区，以保证不同reducer处理数据的有序性，该方法具体采样逻辑由继承类实现
+     */
+     K[] getSample(InputFormat<K,V> inf, JobConf job) throws IOException;
+  }
+  /**
+   * 分片数据采样器，从每个分片中对前n条记录进行采样，效率最高
+   */
+  public static class SplitSampler<K,V> implements Sampler<K,V> {
+    // ...
+  }
+  /**
+   * 随机数据采样器，按照一定频率对所有记录进行随机取样
+   */
+  public static class RandomSampler<K,V> implements Sampler<K,V> {
+    // ...
+  }
+  /**
+   * 对每个分片按照固定间隔进行采样
+   */
+  public static class IntervalSampler<K,V> implements Sampler<K,V> {
+    // ...
+  }
+}
+```
+
+二次排序的原理是：在map阶段的最后会使用partitoner对输出分区，每个分区对应一个reducer，分区内使用sort comparator对键进行排序，如果没有设置sort comparator就使用键的compareTo方法；在reduce阶段，reducer接收到所有映射到这个reducer的map输出后，使用sort comparator对所有数据进行排序，然后使用grouping comparator聚合同一个键的值（使用grouping comparator比较两个键，如果相等，则它们属于同一组，将它们的值放入到值迭代器中），构造一个键对应的值迭代器。
+
+二次排序的步骤:
+
+1. 使用自然键和自然值组成的复合键
+2. sort comparator对复合键进行排序
+3. 复合键的partitioner和grouping comparator进行分区和聚合时应该仅考虑自然键
+
+```Java
+public class MaxTemperatureUsingSecondarySort extends Configured implements Tool {
+  static class MaxTempreatureMapper extends Mapper<LongWritable, Text, IntPair, NullWritable> {
+    private NcdcRecordParser parser = new NcdcRecordRecordParser();
+
+    @Override
+    protected void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
+      parser.parse(value);
+      if (parser.isValidTemperature()) {
+        context.write(new IntPair(parser.getYearInt(), parser.getAirTemperature()), NullWritable.get());
+      }
+    }
+  }
+  public static class FirstPartitioner extends Partitioner<IntPair, NullWritable> {
+    @Override
+    public int getPartition(IntPair key, NullWritable value, int numPartitions) {
+      return math.abs(key.getFirst() * 127) % numPartitions
+    }
+  }
+  public static class KeyComparator extends WritableComparator {
+    protected KeyComparator() {
+      super(IntPair.class, true);
+    }
+    @Override
+    public int compare(WritableComparable w1, WritableComparable w2) {
+      IntPair ip1 = (IntPair) w1;
+      IntPair ip2 = (IntPair) w2;
+      int cmp = IntPair.compare(ip1.getFirst(), ip2.getFirst());
+      if (cmp != 0) {
+        return cmp;
+      }
+      return -IntPair.compare(ip1.getSecond(), ip2.getSecond());
+    }
+  }
+  public static class GroupComparator extends WritableComparator {
+    protected GroupComparator() {
+      super(IntPair.class, true);
+    }
+    @Override
+    public int compare(WritableComparable w1, WritableComparable w2) {
+      IntPair ip1 = (IntPair) w1;
+      IntPair ip2 = (IntPair) w2;
+      return IntPair.compare(ip1.getFirst(), ip2.getFirst());
+    }
+  }
+  @Override
+  public int run(String[] args) throw Exception {
+    Job job = JobBuilder.parseInputAndOutput(this, getConf(), args);
+    if (job == null) return -1;
+    job.setMapperClass(MaxTemperatureMapper.class);
+    job.setPartitionerClass(FirstPartitioner.class);
+    job.setSortComparatorClass(KeyComparator.class);
+    job.setGroupingComparatorClass(GroupComparator.class);
+    job.setReducerClass(MaxTemperatureReducer.class);
+    job.setOutputKeyClass(IntPair.class);
+    job.setOutputValueClass(NullWritable.class);
+
+    return job.waitForCompletion(true)?0:1
+  }
+  public static void main(String[] args) throws Exception {
+    int exitCode = ToolRunner.run(new MaxTemperatureUsingSecondarySort(), args);
+    System.exit(exitCode);
+  }
+}
+```
+
+键的排序顺序由RawComparator确定：
+
+1. 如果设置了属性`mapreduce.job.output.key.comparator.class`，显式指定或对Job调用`setSortComparatorClass()`，那么使用该类的实例
+2. 否则，如果键是`WritableComparable`及其子类，那么将使用该键类型注册的comparator
+3. 没有注册的comparator时，使用`RawComparator`。`RawComparator`反序列化将要比较的字节流为对象，然后再使用`WritableComparable`的`compareTo()`方法。
 
 ## API ##
 
