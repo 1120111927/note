@@ -603,6 +603,10 @@ final void treeifyBin(Node<K,V>[] tab, int hash) {
 
 进行树化改造主要是为了防止哈希碰撞拒绝服务攻击（哈希冲突发生频繁导致链表过长，性能退化）。
 
++ 多线程put操作可能导致get死循环
++ 多线程put非null元素后，get操作得到null值
++ 多线程put操作可能导致元素丢失
+
 ### LinkedHashMap ###
 
 LinkedHashMap使用双向链表保证迭代顺序。
