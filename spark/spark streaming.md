@@ -49,8 +49,6 @@ Spark Streaming提供两类数据流来源：
 
 DStreaming的容错性和RDD的相同：只要输入数据的一个副本有效，Spark Streaming便能通过RDD Lineage（血统）重新计算它之后的任何状态。接收的数据默认在两个节点上复制，所以Spark Streaming可以承受单个worker失败。仅仅使用Lineage在重新计算应用开始时的数据时耗时较长，为此Spark Streaming提供了checkpoint机制。checkpoint周期性的将状态保存到可靠的文件系统，恢复丢失的数据时，Spark Streaming仅仅只需回溯到上个checkpoint。
 
-
-
 ## checkpoint ##
 
 有两类数据需要定期checkpoint：
