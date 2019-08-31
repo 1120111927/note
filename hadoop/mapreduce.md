@@ -118,7 +118,9 @@ reduce分为三个阶段：shuffle、sort和reduce。
 
 #### shuffle 和 sort ####
 
-shuffle是框架执行排序并把map输出传入reducer的过程，是MapReduce的核心。
+shuffle是MapReduce框架中的一个特定阶段，介于map阶段和reduce阶段之间，是MapReduce的核心。当map的输出结果要被reduce使用时，输出结果需要按key哈希，并且分发到每一个reducer上去，这个过程就是shuffle。
+
+shuffle涉及磁盘的读写和网络的传输，所以其性能高低直接影响整个程序的运行效率。
 
 ![shuffle and sort](images/shuffleandsort.jpeg)
 
