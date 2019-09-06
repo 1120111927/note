@@ -4,7 +4,7 @@ Hadoop的分布式资源管理框架（Yet Another Resource Negotiator）
 
 ## 基本架构 ##
 
-![yarn_architecture](/assets/yarn_architecture.gif)
+![yarn_architecture](images/yarn_architecture.gif)
 
 YARN的基本思想是分离资源管理和任务调度/监控，分别由ResourceManager和ApplicationMaster负责。
 
