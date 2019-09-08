@@ -13,6 +13,17 @@
     set hive.input.format=org.apache.hadoop.hive.ql.io.HiveInputFormat;  -- 不进行小文件合并
     ```
 
+    ```hive
+    set mapred.max.split.size=256000000;  #每个Map最大输入大小
+    set mapred.min.split.size.per.node=100000000; #一个节点上split的至少的大小 
+    set mapred.min.split.size.per.rack=100000000; #一个交换机下split的至少的大小
+    set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;  #执行Map前进行小文件合并
+    ```
+
+在开启了org.apache.hadoop.hive.ql.io.CombineHiveInputFormat后，一个data node节点上多个小文件会进行合并，合并文件数由mapred.max.split.size限制的大小决定。
+mapred.min.split.size.per.node决定了多个data node上的文件是否需要合并
+mapred.min.split.size.per.rack决定了多个交换机上的文件是否需要合并
+
 3. 合并输出：
 
     ```hive
